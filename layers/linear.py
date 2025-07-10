@@ -6,6 +6,7 @@ import torch
 
 class LinearBase(nn.Module):
     def __init__(self, input_size, output_size, tp_dim: int | None = None):
+        super().__init__()
         self.tp_dim = tp_dim
         self.tp_rank = dist.get_rank()
         self.tp_size = dist.get_world_size()
@@ -14,13 +15,13 @@ class LinearBase(nn.Module):
     def forward(self, x: torch.Tensor):
         raise NotImplementedError
     
-class ColumnLinearBase(nn.Module):
+class ColumnLinearBase(LinearBase):
     def __init__(self, input_size: int, output_size: int, bias: bool = False):
         super().__init__(input_size, output_size, 0)
         self.output_size_parition = output_size // self.tp_size
         self.weight = nn.Parameter(torch.empty(self.output_size_parition, self.input_size))
         self.weight.weight_loader = self.weight_loader
-        if self.bias:
+        if bias:
             self.bias = nn.Parameter(torch.empty(self.output_size_parition))
             self.bias.weight_loader = self.weight_loader
         else:

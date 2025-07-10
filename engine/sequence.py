@@ -12,7 +12,7 @@ class Sequence:
     counter = count()
     def __init__(self, token_ids: list[int], block_size=256, sampling_params = SamplingParams()):
         self.seq_id = next(Sequence.counter)
-        self.blocks_table = []  # store block id
+        self.block_tables = []  # store block id
         self.tokens_ids = copy(token_ids)
         self.num_tokens = len(token_ids)
         self.num_prompt_tokens = len(token_ids)
@@ -25,6 +25,8 @@ class Sequence:
         
     def __getitem__(self, key):
         return self.tokens_ids[key]
+    def __len__(self):
+        return self.num_tokens
 
     @property
     def is_finished(self):

@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from transformers import Qwen3Config
-from layers.embed_head import VocabParallelEmbedding
+from layers.embed_head import VocabParallelEmbedding, ParallelLMHead
 from layers.layernorm import RMSNorm
 from layers.linear import MergedColumnLinear, QKVParallelLinear, RowParallelLinear
 from layers.activation import SwiluAndMul
@@ -12,12 +12,13 @@ from layers.rotary_embedding import get_rope
 class Qwen3Attention(nn.Module):
     def __init__(self, config: Qwen3Config, max_position: int = 4096 * 32):
             # def __init__(self, hidden_size: int, head_size: int, total_num_heads: int,  total_num_kv_heads: int | None, bias: bool = False):
+        super().__init__()
         self.config = config
         self.qkv_proj = QKVParallelLinear(config.hidden_size, config.head_dim, config.num_attention_heads, config.num_key_value_heads, bias=False)
         self.q_norm = RMSNorm(config.head_dim)
         self.k_norm = RMSNorm(config.head_dim)
-        self.rotary_emb = get_rope(self.head_dim,
-            rotary_dim=self.head_dim,
+        self.rotary_emb = get_rope(config.head_dim,
+            rotary_dim=config.head_dim,
             max_position=max_position,
             base=config.rope_theta,
             rope_scaling=config.rope_scaling
@@ -38,8 +39,9 @@ class Qwen3Attention(nn.Module):
         qkv = self.qkv_proj(x)
         q, k, v = qkv.split([self.q_dim, self.k_dim, self.k_dim], dim=-1)
         q_by_head = q.view(-1, self.num_heads, self.head_dim)
+        k_by_head = k.view(-1, self.num_kv_heads, self.head_dim)
         q = self.q_norm(q_by_head)
-        k = self.k_norm(k)
+        k = self.k_norm(k_by_head)
         q, k = self.rotary_emb(positions, q, k)
         o = self.attn(q, k, v)
         output = self.o_proj(o)
@@ -48,11 +50,12 @@ class Qwen3Attention(nn.Module):
 
 class Qwen3MLP(nn.Module):
     def __init__(self, config: Qwen3Config):
-        self.up_gate_proj = MergedColumnLinear(config.hidden_size, [config.intermediate_size]*2, bias=False)
-        self.down_proj = RowParallelLinear(config, config.intermediate_size, config.hidden_size, bias=False)
+        super().__init__()
+        self.gate_up_proj = MergedColumnLinear(config.hidden_size, [config.intermediate_size]*2, bias=False)
+        self.down_proj = RowParallelLinear(config.intermediate_size, config.hidden_size, bias=False)
         self.act_fn = SwiluAndMul(config)
     def forward(self, x: torch.Tensor):
-        x = self.up_gate_proj(x)
+        x = self.gate_up_proj(x)
         x = self.act_fn(x)
         x = self.down_proj(x)
         return x
@@ -61,16 +64,16 @@ class Qwen3MLP(nn.Module):
 class DecoderLayer(nn.Module):
     def __init__(self, config: Qwen3Config):
         super().__init__()
-        self.attn = Qwen3Attention(config)
+        self.self_attn = Qwen3Attention(config)
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_atten_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.mlp = Qwen3MLP(config)
-    def forward(self, x: torch.tensor, residual = None):
+    def forward(self, x: torch.tensor, positions: torch.Tensor, residual = None):
         if residual is None:
             residual = x
             x, residual = self.input_layernorm(x, residual)
-        x = self.attn(x)
-        x, residual = self.post_atten_layernorm(x, residual)
+        x = self.self_attn(x, positions)
+        x, residual = self.post_attention_layernorm(x, residual)
         x = self.mlp(x)
         return x, residual
 
@@ -81,16 +84,24 @@ class Qwen3Model(nn.Module):
         self.layers = nn.ModuleList(DecoderLayer(config) for _ in range(config.num_hidden_layers))
         self.norm = RMSNorm(config.hidden_size)
     
-    def forward(self, input_ids: torch.Tesnor):
+    def forward(self, input_ids: torch.Tensor, positions: torch.Tensor):
         x = self.embed_tokens(input_ids)
         residual = None
         for l in self.layers:
-            x, residual = l(x, residual)
+            x, residual = l(x, positions, residual)
         return self.norm(x)
 
 class Qwen3ForCausalLM(nn.Module):
+    packed_modules_mapping = {
+        "q_proj": ("qkv_proj", "q"),
+        "k_proj": ("qkv_proj", "k"),
+        "v_proj": ("qkv_proj", "v"),
+        "gate_proj": ("gate_up_proj", 0),
+        "up_proj": ("gate_up_proj", 1),
+    }
     def __init__(self, config: Qwen3Config):
-        self.lm_head = None # last layer, from hidden states to vocab size
+        super().__init__()
+        self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size, bias=False) # last layer, from hidden states to vocab size
         self.model = Qwen3Model(config)
         if config.tie_word_embeddings:
             self.lm_head.weight.data = self.model.embed_tokens.weight.data
@@ -99,7 +110,7 @@ class Qwen3ForCausalLM(nn.Module):
         hidden_states =  self.model(input_ids, positions)
         return hidden_states
     
-    def compute_logit(self, hidden_states: torch.Tensor):
+    def compute_logits(self, hidden_states: torch.Tensor):
         logits = self.lm_head(hidden_states)
         return logits
 

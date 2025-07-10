@@ -4,6 +4,8 @@ import torch
 from utils.context import set_context, get_context, reset_context
 from utils.loader import load_model
 from models.qwen import Qwen3ForCausalLM
+import torch.distributed as dist
+
 
 class ModelRunner:
     def __init__(self, config, rank: int = 0):
@@ -11,9 +13,15 @@ class ModelRunner:
         self.block_size = config.kvcache_block_size
         self.kv_cache = None
         self.rank = rank
+        print(self.config.hf_config)
+        self.world_size = config.tensor_parallel_size
+        dist.init_process_group("nccl", "tcp://localhost:2333", world_size=self.world_size, rank=rank)
+        torch.cuda.set_device(rank)
+        default_dtype = torch.get_default_dtype()
+        torch.set_default_dtype(config.hf_config.torch_dtype)
+        torch.set_default_device("cuda")
         self.model = Qwen3ForCausalLM(self.config.hf_config)
         self.sampler = Sampler()
-        self.world_size = config.tensor_parallel_size
         self._allocate_kv_cache()
         load_model(self.model, config.model)
     
@@ -30,7 +38,7 @@ class ModelRunner:
         available_kv_cache_memory = total*config.gpu_memory_utilization - peak_memory
         num_nv_heads = hf_config.num_key_value_heads // self.world_size
         block_bytes = 2 * hf_config.num_hidden_layers * self.block_size * num_nv_heads * hf_config.head_dim * hf_config.torch_dtype.itemsize
-        config.num_kvcache_blocks = available_kv_cache_memory // block_bytes 
+        config.num_kvcache_blocks = int(available_kv_cache_memory) // block_bytes 
         assert config.num_kvcache_blocks > 0
 
         self.kv_cache = torch.zeros(2, hf_config.num_hidden_layers, config.num_kvcache_blocks, self.block_size, num_nv_heads, hf_config.head_dim)
@@ -41,7 +49,7 @@ class ModelRunner:
                 module.v_cache = self.kv_cache[1, layer_id]
                 layer_id += 1
 
-    def prepare_block_tables(seqs):
+    def prepare_block_tables(self, seqs):
         max_len = max(len(seq.num_blocks) for seq in seqs)
         block_tables = [seq.block_tables + [-1] * (max_len-len(seq.num_blocks)) for seq in seqs]
         block_tables = torch.tensor(block_tables, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
@@ -55,11 +63,15 @@ class ModelRunner:
         cu_seqlens_k = [0]
         block_tables = None
         slot_mapping = []
+        max_seqlen_q = 0
+        max_seqlen_k = 0
         for seq in seqs:
             input_ids.extend(seq[seq.num_cached_tokens:])
-            positions_ids = positions_ids.extend([list(range(seq.num_cached_tokens, len(seq))) for seq in seqs])
+            positions_ids.extend(list(range(seq.num_cached_tokens, len(seq))))
             seqlens_q = len(seq) - seq.num_cached_tokens
             seqlens_k = len(seq)
+            max_seqlen_q = max(max_seqlen_q, seqlens_q)
+            max_seqlen_k = max(max_seqlen_k, seqlens_k)
             cu_seqlens_q.append(cu_seqlens_q[-1] + seqlens_q)
             cu_seqlens_k.append(cu_seqlens_k[-1] + seqlens_k)
             if not seq.block_tables:
@@ -74,12 +86,30 @@ class ModelRunner:
         if cu_seqlens_q[-1] < cu_seqlens_k[-1]:
             block_tables = self.prepare_block_tables(seqs)
         input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
-        set_context(cu_seqlens_k=cu_seqlens_k, cu_seqlens_q=cu_seqlens_q, block_tables=block_tables, slot_mapping=slot_mapping)
+        positions_ids = torch.tensor(positions_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
+        cu_seqlens_k = torch.tensor(cu_seqlens_k, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        cu_seqlens_q = torch.tensor(cu_seqlens_q, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        set_context(is_prefill=True, cu_seqlens_k=cu_seqlens_k, cu_seqlens_q=cu_seqlens_q, block_tables=block_tables, slot_mapping=slot_mapping, max_seqlen_q=max_seqlen_q, max_seqlen_k=max_seqlen_k)
         return input_ids, positions_ids
 
     def prepare_decode(self, seqs):
-        input_ids = [seq.last_token for seq in seqs]
-        positions = [len(seq) for seq in seqs]
+        input_ids = []
+        positions = []
+        slot_mapping = []
+        context_lens = []
+
+        for seq in seqs:
+            input_ids.append(seq.last_token)
+            positions.append(len(seq))
+            context_lens.append(len(seq))
+            slot_mapping.extend(seq.block_tables[i]*self.block_size + seq.last_block_num_tokens-1)
+        input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
+        positions = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
+        slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        context_lens = torch.tensor(context_lens, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        block_tables = self.prepare_block_tables(seqs)
+        set_context(is_prefill=False, context_lens=context_lens, slot_mapping=slot_mapping, block_tables=block_tables)
         return input_ids, positions
     
     def run_model(self, input_ids, postion_ids, is_prefill):
@@ -102,10 +132,14 @@ class ModelRunner:
             return self.model.compute_logits(self.graph_vars["outputs"][:bs])
 
              
+    def prepare_sample(self, seqs):
+        temperatures = [seq.sampling_params.temperature for seq in seqs]
+        return temperatures
+    
     def run(self, seqs: list[Sequence], is_prefill: bool) -> list[int]:
         input_ids, postion_ids = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
         # bs, len=1, vocab_size
-        logits = self.model.compute_logits(self.model(input_ids, postion_ids))
+        logits = self.run_model(input_ids, postion_ids, is_prefill)
         temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
         token_ids = self.sampler(logits, temperatures).tolist() if self.rank==0 else None
         return token_ids

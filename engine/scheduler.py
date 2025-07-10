@@ -28,6 +28,10 @@ class Scheduler:
             seq = self.waiting[0]
             # check if it can scheduled
             if num_batched_tokens + len(seq) > self.max_num_batched_tokens or not self.block_manager.can_allocate(seq):
+                print(f"cannot allocate seq: {seq}")
+                print(f"num_batched_tokens: {num_batched_tokens}")
+                print(f"len(seq): {len(seq)}")
+                print(f"max_num_batched_tokens: {self.max_num_batched_tokens}")
                 break
             self.block_manager.allocate(seq)
             scheduled_seqs.append(seq)
@@ -54,6 +58,7 @@ class Scheduler:
                 self.block_manager.may_append(seq)
                 self.running.appendleft(seq)
         assert scheduled_seqs
+        print(f"scheduled_seqs: {scheduled_seqs}")
         return scheduled_seqs, False
 
     def post_process(self, seqs: list[Sequence], token_ids: list[int]) -> list[bool]:
@@ -63,5 +68,7 @@ class Scheduler:
                 seq.status = SequenceStatus.FINISHED
                 self.block_manager.deallocate(seq)
                 self.running.remove(seq)
+    def is_finished(self):
+        return not self.running and not self.waiting
 
             

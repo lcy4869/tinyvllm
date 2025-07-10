@@ -45,10 +45,11 @@ class BlockManager:
 
     def can_allocate(self, seq: Sequence):
         # it does not consider prefix cache
+        print(f"can_allocate: {len(self.free_blocks)} >= {seq.num_blocks}")
         return len(self.free_blocks) >= seq.num_blocks
 
     def allocate(self, seq: Sequence):
-        assert not seq.blocks_table
+        assert not seq.block_tables
         cache_miss = False
         hash = -1 # hash
         for i in range(seq.num_blocks):
@@ -67,7 +68,7 @@ class BlockManager:
                     block.ref_count += 1
                 else:
                     block = self._allocate_block(block_id)
-            seq.blocks_table.append(block_id)
+            seq.block_tables.append(block_id)
             if hash != -1:
                 block.update(hash, token_ids)
                 self.hash_to_block_id[hash] = block_id

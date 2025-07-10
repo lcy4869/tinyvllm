@@ -11,32 +11,44 @@ class LLM:
     def __init__(self, model, **kwargs):
         field_names = {f.name for f in fields(Config)}
         field_values = {k: v for k, v in kwargs.items() if k in field_names}
-        self.config = Config(field_values)
+        self.config = Config(model=model, **field_values)
+        self.model_runner = ModelRunner(self.config)
         self.scheduler = Scheduler(self.config)
         self.tokenizer = AutoTokenizer.from_pretrained(self.config.model)
-        self.model_runner = ModelRunner(self.config)
         self.model = model
 
     
     def add_requests(self, prompt, sampling_params: SamplingParams):
-        s = Sequence(prompt)
-        self.scheduler.add(s, sampling_params)
+        # Convert string prompt to token IDs if needed
+        if isinstance(prompt, str):
+            token_ids = self.tokenizer.encode(prompt)
+        else:
+            token_ids = prompt
+        s = Sequence(token_ids, sampling_params=sampling_params)
+        self.scheduler.add(s)
         
     def step(self):
         seqs, is_prefill = self.scheduler.schedule()
         token_ids = self.model_runner.run(seqs, is_prefill)
-        outputs = [(seq.id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
+        self.scheduler.post_process(seqs, token_ids)
+        outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
         return outputs
 
     
     def generate(self, prompts: list[str] | list[list[int]], sampling_params: SamplingParams | list[SamplingParams]):
+        if not isinstance(sampling_params, list):
+            sampling_params = [sampling_params] * len(prompts)
         for prompt, sp in zip(prompts, sampling_params):
             self.add_requests(prompt, sp)
         outputs = {}
+        cnt = 0
         while not self.scheduler.is_finished():
             output = self.step()
             for seq_id, seq_output in output:
                 outputs[seq_id] = seq_output
-        outputs = [output[seq_id] for seq_id in sorted(outputs)]
+            cnt += 1
+            print(f"cnt: {cnt}")
+        outputs = [outputs[seq_id] for seq_id in sorted(outputs)]
+        print(f"Debug - outputs before decode: {outputs}")
         outputs = [{"text": self.tokenizer.decode(token_ids)} for token_ids in outputs]
         return outputs

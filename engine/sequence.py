@@ -12,11 +12,12 @@ class Sequence:
     counter = count()
     def __init__(self, token_ids: list[int], block_size=256, sampling_params = SamplingParams()):
         self.seq_id = next(Sequence.counter)
-        self.blocks_table = []  # store block id
+        self.block_tables = []  # store block id
         self.tokens_ids = copy(token_ids)
         self.num_tokens = len(token_ids)
         self.num_prompt_tokens = len(token_ids)
         self.num_cached_tokens = 0
+        self.sampling_params = sampling_params
         self.max_tokens = sampling_params.max_tokens
         self.temperature = sampling_params.temperature
         self.ignore_eos = sampling_params.ignore_eos
@@ -25,6 +26,8 @@ class Sequence:
         
     def __getitem__(self, key):
         return self.tokens_ids[key]
+    def __len__(self):
+        return self.num_tokens
 
     @property
     def is_finished(self):
@@ -48,7 +51,7 @@ class Sequence:
     
     @property
     def num_completion_tokens(self):
-        return self.num_tokens - len(self.num_prompt_tokens)
+        return self.num_tokens - self.num_prompt_tokens
 
     
     def block(self, i):
@@ -58,3 +61,7 @@ class Sequence:
     @property
     def last_block_num_tokens(self):
         return self.num_tokens - (self.num_blocks-1) * self.block_size 
+
+    @property
+    def completion_token_ids(self):
+        return self.tokens_ids[self.num_prompt_tokens:]

@@ -52,16 +52,18 @@ class Scheduler:
                 num_seqs += 1
                 scheduled_seqs.append(seq)
                 self.block_manager.may_append(seq)
-                self.running.appendleft(seq)
         assert scheduled_seqs
+        self.running.extendleft(reversed(scheduled_seqs))
         return scheduled_seqs, False
 
     def post_process(self, seqs: list[Sequence], token_ids: list[int]) -> list[bool]:
         for seq, token_id in zip(seqs, token_ids):
             seq.append_tokens(token_id)
-            if (not seq.ignore_eos and token_id == self.config.eos) or seq.num_completion_tokens >= self.config.max_tokens:
+            if (not seq.ignore_eos and token_id == self.config.eos) or seq.num_completion_tokens >= seq.max_tokens:
                 seq.status = SequenceStatus.FINISHED
                 self.block_manager.deallocate(seq)
                 self.running.remove(seq)
+    def is_finished(self):
+        return not self.running and not self.waiting
 
             

@@ -48,7 +48,7 @@ class BlockManager:
         return len(self.free_blocks) >= seq.num_blocks
 
     def allocate(self, seq: Sequence):
-        assert not seq.blocks_table
+        assert not seq.block_tables
         cache_miss = False
         hash = -1 # hash
         for i in range(seq.num_blocks):
@@ -67,7 +67,7 @@ class BlockManager:
                     block.ref_count += 1
                 else:
                     block = self._allocate_block(block_id)
-            seq.blocks_table.append(block_id)
+            seq.block_tables.append(block_id)
             if hash != -1:
                 block.update(hash, token_ids)
                 self.hash_to_block_id[hash] = block_id
@@ -78,27 +78,26 @@ class BlockManager:
         self.used_blocks.remove(block_id)
 
     def deallocate(self, seq: Sequence):
-        for i in range(seq.num_blocks):
-            block_id = seq.num_blocks[i]
+        for block_id in reversed(seq.block_tables):
             block = self.blocks[block_id]
             block.ref_count -= 1
             if block.ref_count == 0:
                 self._deallocate(block_id)
         seq.num_cached_tokens = 0
-        seq.blocks_table.clear()
+        seq.block_tables.clear()
     
     def can_append(self, seq: Sequence):
-        len(self.free_blocks) >= (len(seq) % self.block_size == 1)
+        return len(self.free_blocks) >= (len(seq) % self.block_size == 1)
     
     def may_append(self, seq: Sequence):
         # append to last block, or create a new one and append last token
-        block_tables = seq.blocks_table
+        block_tables = seq.block_tables
         last_block = self.blocks[block_tables[-1]]
         if len(seq) % self.block_size == 1:
             assert last_block.hash != -1
             block_id = self.free_blocks[0]
             self._allocate_block(block_id)
-            seq.blocks_table.append(block_id)
+            seq.block_tables.append(block_id)
             # not full block, so do not update hash
         elif len(seq) % self.block_size == 0:
             # update last block hash
@@ -107,15 +106,7 @@ class BlockManager:
             token_ids = seq.block(seq.num_blocks-1)
             h = self.compute_hash(token_ids, prefix)
             last_block.update(h, token_ids)
-            self.hash_to_block_id[h] = last_block.block_id
+            self.hash_to_block_id[h] = last_block.id
         else:
             assert last_block.hash == -1
 
-
-
-
-
-
-
-
-            

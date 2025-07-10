@@ -38,7 +38,6 @@ Thumbs.db
 # Model files (optional - remove if you want to track them)
 *.bin
 *.safetensors
-models/
 
 # Logs
 *.log 

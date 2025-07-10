@@ -13,10 +13,6 @@ class ModelRunner:
         self.block_size = config.kvcache_block_size
         self.kv_cache = None
         self.rank = rank
-<<<<<<< HEAD
-=======
-        print(self.config.hf_config)
->>>>>>> 725a6229f0e138e40600eab20c347335b43873c8
         self.world_size = config.tensor_parallel_size
         dist.init_process_group("nccl", "tcp://localhost:2333", world_size=self.world_size, rank=rank)
         torch.cuda.set_device(rank)
@@ -59,13 +55,8 @@ class ModelRunner:
                 layer_id += 1
 
     def prepare_block_tables(self, seqs):
-<<<<<<< HEAD
         max_len = max(len(seq.block_tables) for seq in seqs)
         block_tables = [seq.block_tables + [-1] * (max_len-len(seq.block_tables)) for seq in seqs]
-=======
-        max_len = max(len(seq.num_blocks) for seq in seqs)
-        block_tables = [seq.block_tables + [-1] * (max_len-len(seq.num_blocks)) for seq in seqs]
->>>>>>> 725a6229f0e138e40600eab20c347335b43873c8
         block_tables = torch.tensor(block_tables, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         return block_tables
 
@@ -117,11 +108,7 @@ class ModelRunner:
             input_ids.append(seq.last_token)
             positions.append(len(seq))
             context_lens.append(len(seq))
-<<<<<<< HEAD
             slot_mapping.append(seq.block_tables[-1]*self.block_size + seq.last_block_num_tokens-1)
-=======
-            slot_mapping.extend(seq.block_tables[i]*self.block_size + seq.last_block_num_tokens-1)
->>>>>>> 725a6229f0e138e40600eab20c347335b43873c8
         input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         positions = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
@@ -151,12 +138,8 @@ class ModelRunner:
 
              
     def prepare_sample(self, seqs):
-<<<<<<< HEAD
         temperatures = [seq.temperature for seq in seqs]
         temperatures = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).cuda(non_blocking=True)
-=======
-        temperatures = [seq.sampling_params.temperature for seq in seqs]
->>>>>>> 725a6229f0e138e40600eab20c347335b43873c8
         return temperatures
     
     def run(self, seqs: list[Sequence], is_prefill: bool) -> list[int]:

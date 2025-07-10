@@ -3,6 +3,7 @@ import torch
 from utils.context import get_context
 import triton
 import triton.language as tl
+from flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache
 
 @triton.jit
 def store_kvcache_kernel(k_ptr, k_stride, v_ptr, v_stride, k_cache, v_cache, slot_mapping_ptr, D: tl.constexpr):
@@ -53,6 +54,7 @@ class Attention(nn.Module):
                                        max_seqlen_q=context.max_seqlen_q, max_seqlen_k=context.max_seqlen_k,
                                        causal=True, block_table=context.block_tables)
         else:
-            o = flash_attn_with_kvcache(q, k_cache, v_cache, cache_seqlens=context.context_lens, block_table=context.block_tables)
+            o = flash_attn_with_kvcache(q.unsqueeze(1), k_cache, v_cache, cache_seqlens=context.context_lens, block_table=context.block_tables)
+        o = o.view(-1, self.num_heads * self.head_dim)
         return o
 

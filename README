@@ -9,3 +9,7 @@ huggingface-cli download --resume-download Qwen/Qwen3-0.6B \
 
 
 python example.py
+
+
+ubuntu@159-54-173-93:~/tinyvllm$ python bench.py 
+Total: 133966tok, Time: 44.84s, Throughput: 2987.90tok/s

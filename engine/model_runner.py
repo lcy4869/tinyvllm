@@ -6,13 +6,16 @@ from utils.loader import load_model
 from models.qwen import Qwen3ForCausalLM
 import torch.distributed as dist
 
+from multiprocessing.synchronize import Event
+from multiprocessing.shared_memory import SharedMemory
 
 class ModelRunner:
-    def __init__(self, config, rank: int = 0):
+    def __init__(self, config, rank: int = 0, event: Event | list[Event] = None):
         self.config = config
         self.block_size = config.kvcache_block_size
         self.kv_cache = None
         self.rank = rank
+        self.event = event
         self.world_size = config.tensor_parallel_size
         dist.init_process_group("nccl", "tcp://localhost:2333", world_size=self.world_size, rank=rank)
         torch.cuda.set_device(rank)
@@ -23,13 +26,66 @@ class ModelRunner:
         self.model = self.model.cuda()  # Move model to GPU
         self.sampler = Sampler()
         self._allocate_kv_cache()
+        self.warmup_model()
         self.enforce_eager = config.enforce_eager
-        print(config.enforce_eager)
         if not config.enforce_eager:
             print("capture cudagraph")
             self.capture_cudagraph()
             
         load_model(self.model, config.model)
+        if self.world_size > 1:
+            if rank == 0:
+                self.shared_memory = SharedMemory(name="shared_memory", create=True, size=1024)
+                dist.barrier()
+            else:
+                dist.barrier()
+                self.shared_memory = SharedMemory(name=f"shared_memory")
+                self.loop()
+    
+    def warmup_model(self):
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        max_num_batched_tokens, max_model_len = self.config.max_num_batched_tokens, self.config.max_model_len
+        num_seqs = min(max_num_batched_tokens // max_model_len, self.config.max_num_seqs)
+        seqs = [Sequence([0] * max_model_len) for _ in range(num_seqs)]
+        self.run(seqs, True)
+        torch.cuda.empty_cache()
+
+    def read_shared_memory(self):
+        assert self.world_size > 1 and self.rank > 0
+        self.event.wait()
+        n = int.from_bytes(self.shared_memory.buf.read(4), "little")
+        data = self.shared_memory.buf.read(n)
+        method, *args = pickle.loads(data)
+        self.event.clear()
+        return method, args
+        
+    
+    def write_shared_memory(self, method, *args):
+        assert self.world_size > 1 and self.rank == 0
+        data = pickle.dumps([method, *args])
+        n = len(data)
+        self.shared_memory.buf.write(n.to_bytes(4, "little"))
+        self.shared_memory.buf.write(data)
+        for event in self.events:
+            event.set() # wake up other processes
+    
+    def loop(self):
+        if self.rank > 0:
+            while True:
+                method, args = self.read_shared_memory()
+                self.call(method, *args)
+                if method == "exit":
+                    break
+    
+    def exit(self):
+        dist.destroy_process_group()
+
+    def call(self, func, *args):
+        if self.world_size > 1 and self.rank == 0:
+            self.write_shared_memory(func, *args)
+        method = getattr(self, func, None)
+        return method(*args)
     
     def _allocate_kv_cache(self):
         # get gpu memory
@@ -118,6 +174,7 @@ class ModelRunner:
         set_context(is_prefill=False, context_lens=context_lens, slot_mapping=slot_mapping, block_tables=block_tables)
         return input_ids, positions
     
+    @torch.inference_mode()
     def run_model(self, input_ids, postion_ids, is_prefill):
         if is_prefill or self.enforce_eager or input_ids.size(0) > 512:
             return self.model.compute_logits(self.model(input_ids, postion_ids))
@@ -164,7 +221,7 @@ class ModelRunner:
         slot_mapping = torch.zeros(max_bs, dtype=torch.int32)
         outputs = torch.zeros(max_bs, hf_config.hidden_size)
         block_tables = torch.zeros(max_bs, max_num_blocks, dtype=torch.int32)
-        content_lens = torch.zeros(max_bs, dtype=torch.int32)
+        context_lens = torch.zeros(max_bs, dtype=torch.int32)
         self.graph_pool = None
         self.graphs = {}
         self.graph_bs = [1, 2, 4, 8] + list(range(16, max_bs+1, 16))
@@ -172,7 +229,7 @@ class ModelRunner:
 
         for bs in reversed(self.graph_bs):
             graph = torch.cuda.CUDAGraph()
-            set_context(False, slot_mapping=slot_mapping[:bs], block_tables=block_tables[:bs], context_lens=content_lens[:bs])
+            set_context(False, slot_mapping=slot_mapping[:bs], block_tables=block_tables[:bs], context_lens=context_lens[:bs])
             outputs[:bs] = self.model(input_ids[:bs], positions[:bs])    # warmup
             with torch.cuda.graph(graph, self.graph_pool):
                 outputs[:bs] = self.model(input_ids[:bs], positions[:bs]) # capture
@@ -187,5 +244,5 @@ class ModelRunner:
             slot_mapping=slot_mapping,
             outputs=outputs,
             block_tables=block_tables,
-            content_lens=content_lens
+            context_lens=context_lens
         )

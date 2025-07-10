@@ -62,7 +62,7 @@ class BlockManager:
                 block = self._allocate_block(block_id)
             else:
                 seq.num_cached_tokens += self.block_size
-                if block_id in self.used_block_ids:
+                if block_id in self.used_blocks:
                     block = self.blocks[block_id]
                     block.ref_count += 1
                 else:
@@ -102,7 +102,7 @@ class BlockManager:
         elif len(seq) % self.block_size == 0:
             # update last block hash
             assert last_block.hash == -1
-            prefix = self.blocks[block_tables[-2]] if len(block_tables) >  1 else -1
+            prefix = self.blocks[block_tables[-2]].hash if len(block_tables) >  1 else -1
             token_ids = seq.block(seq.num_blocks-1)
             h = self.compute_hash(token_ids, prefix)
             last_block.update(h, token_ids)

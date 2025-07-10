@@ -45,6 +45,7 @@ class BlockManager:
 
     def can_allocate(self, seq: Sequence):
         # it does not consider prefix cache
+        print(f"can_allocate: {len(self.free_blocks)} >= {seq.num_blocks}")
         return len(self.free_blocks) >= seq.num_blocks
 
     def allocate(self, seq: Sequence):

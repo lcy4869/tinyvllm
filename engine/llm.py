@@ -29,6 +29,7 @@ class LLM:
         
     def step(self):
         seqs, is_prefill = self.scheduler.schedule()
+        print(f"seqs: {seqs}")
         token_ids = self.model_runner.run(seqs, is_prefill)
         self.scheduler.post_process(seqs, token_ids)
         outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]

@@ -28,6 +28,10 @@ class Scheduler:
             seq = self.waiting[0]
             # check if it can scheduled
             if num_batched_tokens + len(seq) > self.max_num_batched_tokens or not self.block_manager.can_allocate(seq):
+                print(f"cannot allocate seq: {seq}")
+                print(f"num_batched_tokens: {num_batched_tokens}")
+                print(f"len(seq): {len(seq)}")
+                print(f"max_num_batched_tokens: {self.max_num_batched_tokens}")
                 break
             self.block_manager.allocate(seq)
             scheduled_seqs.append(seq)

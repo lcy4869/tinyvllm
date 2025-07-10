@@ -29,7 +29,6 @@ class LLM:
         
     def step(self):
         seqs, is_prefill = self.scheduler.schedule()
-        print(f"seqs: {seqs}")
         token_ids = self.model_runner.run(seqs, is_prefill)
         self.scheduler.post_process(seqs, token_ids)
         outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
@@ -42,14 +41,10 @@ class LLM:
         for prompt, sp in zip(prompts, sampling_params):
             self.add_requests(prompt, sp)
         outputs = {}
-        cnt = 0
         while not self.scheduler.is_finished():
             output = self.step()
             for seq_id, seq_output in output:
                 outputs[seq_id] = seq_output
-            cnt += 1
-            print(f"cnt: {cnt}")
         outputs = [outputs[seq_id] for seq_id in sorted(outputs)]
-        print(f"Debug - outputs before decode: {outputs}")
         outputs = [{"text": self.tokenizer.decode(token_ids)} for token_ids in outputs]
         return outputs

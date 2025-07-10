@@ -6,7 +6,7 @@ from safetensors import safe_open
 
 
 def default_weight_loader(param: nn.Parameter, loaded_weight: torch.Tensor):
-    param.data.copy_(loaded_weight)
+    param.data.copy_(loaded_weight.to(param.device))
 
 
 def load_model(model: nn.Module, path: str):

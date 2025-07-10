@@ -3,7 +3,7 @@ import torch
 from utils.context import get_context
 import triton
 import triton.language as tl
-from flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache
+from flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache, flash_attn_func
 
 @triton.jit
 def store_kvcache_kernel(k_ptr, k_stride, v_ptr, v_stride, k_cache, v_cache, slot_mapping_ptr, D: tl.constexpr):
@@ -38,6 +38,7 @@ class Attention(nn.Module):
 
     def forward(self, q, k, v):
         context = get_context()
+        ori_dtype = q.dtype
         q = q.view(-1, self.num_heads, self.head_dim)
         k = k.view(-1, self.num_kv_heads, self.head_dim)
         v = v.view(-1, self.num_kv_heads, self.head_dim)

@@ -20,6 +20,7 @@ class ModelRunner:
         torch.set_default_dtype(config.hf_config.torch_dtype)
         torch.set_default_device("cuda")
         self.model = Qwen3ForCausalLM(self.config.hf_config)
+        self.model = self.model.cuda()  # Move model to GPU
         self.sampler = Sampler()
         self._allocate_kv_cache()
         self.enforce_eager = config.enforce_eager
@@ -138,7 +139,9 @@ class ModelRunner:
 
              
     def prepare_sample(self, seqs):
-        temperatures = [seq.temperature for seq in seqs]
+        temperatures = []
+        for seq in seqs:
+            temperatures.append(seq.temperature)
         temperatures = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).cuda(non_blocking=True)
         return temperatures
     
@@ -148,6 +151,7 @@ class ModelRunner:
         logits = self.run_model(input_ids, postion_ids, is_prefill)
         temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
         token_ids = self.sampler(logits, temperatures).tolist() if self.rank==0 else None
+        
         return token_ids
     
     @torch.inference_mode()

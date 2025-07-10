@@ -71,6 +71,8 @@ class DecoderLayer(nn.Module):
     def forward(self, x: torch.tensor, positions: torch.Tensor, residual = None):
         if residual is None:
             residual = x
+            x = self.input_layernorm(x)
+        else:
             x, residual = self.input_layernorm(x, residual)
         x = self.self_attn(x, positions)
         x, residual = self.post_attention_layernorm(x, residual)
@@ -89,7 +91,8 @@ class Qwen3Model(nn.Module):
         residual = None
         for l in self.layers:
             x, residual = l(x, positions, residual)
-        return self.norm(x)
+        x, _ = self.norm(x, residual)
+        return x
 
 class Qwen3ForCausalLM(nn.Module):
     packed_modules_mapping = {
@@ -101,8 +104,8 @@ class Qwen3ForCausalLM(nn.Module):
     }
     def __init__(self, config: Qwen3Config):
         super().__init__()
-        self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size, bias=False) # last layer, from hidden states to vocab size
         self.model = Qwen3Model(config)
+        self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size, bias=False)
         if config.tie_word_embeddings:
             self.lm_head.weight.data = self.model.embed_tokens.weight.data
     
